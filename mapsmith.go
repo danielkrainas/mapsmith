@@ -6,6 +6,8 @@ import (
 	"sync"
 )
 
+const DefaultTag = "map"
+
 func isStruct(v interface{}) bool {
 	vv := reflect.ValueOf(v)
 	return vv.Kind() == reflect.Struct || (vv.Kind() == reflect.Ptr && vv.Elem().Kind() == reflect.Struct)
@@ -67,11 +69,17 @@ type Field interface {
 	Kind() reflect.Kind
 	Set(v interface{})
 	Value() interface{}
+	HasTag(name string) bool
 }
 
 type fieldHelper struct {
 	V reflect.Value
 	F reflect.StructField
+}
+
+func (f *fieldHelper) HasTag(name string) bool {
+	_, ok := f.F.Tag.Lookup(name)
+	return ok
 }
 
 func (f *fieldHelper) IsExported() bool {
@@ -207,7 +215,7 @@ func parseNameAndFlags(field Field, tagName string) (string, stringSet) {
 	return name, newStringSet(flags...)
 }
 
-func parseField(field Field, name string, flags stringSet) (map[string]FieldAdapter, MapFieldAdapter) {
+func parseField(field Field, name string, nameTag string, filterTag string, flags stringSet) (map[string]FieldAdapter, MapFieldAdapter) {
 	var defaultField MapFieldAdapter
 	m := make(map[string]FieldAdapter)
 	if len(flags) < 1 {
@@ -260,7 +268,7 @@ func parseField(field Field, name string, flags stringSet) (map[string]FieldAdap
 				},
 			}
 		} else {
-			innerInfo := GetMappings(instance.Interface())
+			innerInfo := GetMappings(instance.Interface(), nameTag, filterTag)
 			for ink, inf := range innerInfo.Fields {
 				// todo: warn of duplicate
 				if isZero {
@@ -288,16 +296,24 @@ type Info struct {
 	Extra  MapFieldAdapter
 }
 
-func GetMappings(v interface{}) *Info {
+func GetMappings(v interface{}, nameTag string, filterTag string) *Info {
+	if filterTag == "" {
+		filterTag = nameTag
+	}
+
 	mi := &Info{
 		Fields: make(map[string]FieldAdapter),
 		Extra:  nil,
 	}
 
 	for _, field := range newStructAdapter(v).Fields() {
-		name, flags := parseNameAndFlags(field, "map")
+		if !field.HasTag(filterTag) {
+			continue
+		}
+
+		name, flags := parseNameAndFlags(field, nameTag)
 		if name != "-" {
-			fields, defaultField := parseField(field, name, flags)
+			fields, defaultField := parseField(field, name, nameTag, filterTag, flags)
 			if defaultField != nil {
 				mi.Extra = defaultField
 			}
@@ -311,8 +327,8 @@ func GetMappings(v interface{}) *Info {
 	return mi
 }
 
-func ToMap(v interface{}) map[string]interface{} {
-	info := GetMappings(v)
+func TaggedToMap(v interface{}, nameTag string, filterTag string) map[string]interface{} {
+	info := GetMappings(v, nameTag, filterTag)
 	m := make(map[string]interface{})
 	for k, f := range info.Fields {
 		srcValue := f.Value()
@@ -333,8 +349,12 @@ func ToMap(v interface{}) map[string]interface{} {
 	return m
 }
 
-func FromMap(m map[string]interface{}, dest interface{}) {
-	mappings := GetMappings(dest)
+func ToMap(v interface{}) map[string]interface{} {
+	return TaggedToMap(v, DefaultTag, DefaultTag)
+}
+
+func TaggedFromMap(m map[string]interface{}, dest interface{}, nameTag string, filterTag string) {
+	mappings := GetMappings(dest, nameTag, filterTag)
 	for key, srcValue := range m {
 		field, ok := mappings.Fields[key]
 		if !ok {
@@ -359,6 +379,10 @@ func FromMap(m map[string]interface{}, dest interface{}) {
 
 		field.Set(destValue)
 	}
+}
+
+func FromMap(m map[string]interface{}, dest interface{}) {
+	TaggedFromMap(m, dest, DefaultTag, DefaultTag)
 }
 
 func MapKeys(m map[string]interface{}, keyMap map[string]string) map[string]interface{} {
